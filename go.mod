@@ -1,4 +1,4 @@
-module github.com/anirudhRowjee/pagecache
+module github.com/anirudhRowjee/jacuzzi
 
 go 1.21.1
 
