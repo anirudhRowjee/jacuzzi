@@ -16,11 +16,12 @@ A simple page cache for golang
 */
 
 type Frame struct {
-	frameId int
-	PageId  int
-	Pinned  bool
-	Dirty   bool
-	data    []byte
+	frameId          int // ID local to the frame; Never leaves the frame boundary
+	PageOffsetInFile int // Offset in the file where this page exists
+	Pinned           bool
+	Dirty            bool
+	ReferenceCount   int
+	data             []byte
 }
 
 // Initialize the frame by allocating the data byte array
@@ -29,7 +30,8 @@ func (f *Frame) Initialize(p *PageCache, frameId int) {
 	f.data = make([]byte, p.PageSize)
 	f.Dirty = false
 	f.Pinned = false
-	f.PageId = 0
+	f.PageOffsetInFile = 0
+	f.ReferenceCount = 0
 }
 
 // Reset a frame to reuse it
@@ -37,21 +39,22 @@ func (f *Frame) Reset() {
 	f.frameId = 0
 	f.Dirty = false
 	f.Pinned = false
-	f.PageId = 0
+	f.ReferenceCount = 0
+	f.PageOffsetInFile = 0
 }
 
 type PageCache struct {
-	PageSize  int         // const: number of bytes in a page, loaded at runtime
-	Data      map[int]int // Data is the mapping of address to frames
-	Frames    []Frame     // Frames is where all page frames live, never get deleted
-	SlotCount int         // the number of slots this pagecache has
-	file      *os.File    // backing file
+	PageSize   int         // const: number of bytes in a page, loaded at runtime
+	Data       map[int]int // Data is the mapping of address to frames
+	Frames     []Frame     // Frames is where all page frames live, never get deleted
+	FrameCount int         // the number of slots this pagecache has
+	file       *os.File    // backing file
 }
 
 // Start the pagecache
 func (p *PageCache) Init(PageSize, slots int, filename string) error {
 	p.PageSize = PageSize
-	p.SlotCount = slots
+	p.FrameCount = slots
 
 	// Open the File
 	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 066)
@@ -61,8 +64,8 @@ func (p *PageCache) Init(PageSize, slots int, filename string) error {
 	p.file = file
 
 	// Allocate all Maps
-	p.Data = make(map[int]int, p.SlotCount) // TODO see if we need this to be constant-sized
-	p.Frames = make([]Frame, p.SlotCount)
+	p.Data = make(map[int]int, p.FrameCount) // TODO see if we need this to be constant-sized
+	p.Frames = make([]Frame, p.FrameCount)
 
 	// Allocate all Frames
 	for idx := range p.Frames {
@@ -72,7 +75,7 @@ func (p *PageCache) Init(PageSize, slots int, filename string) error {
 }
 
 func CheckMapKeyPresent(mymap *map[int]int, target int) bool {
-	for k, _ := range *mymap {
+	for k := range *mymap {
 		if k == target {
 			return true
 		}
@@ -91,6 +94,8 @@ func (p *PageCache) ReadPage(PageStartAddress int, Destination []byte) (bool, er
 	if hit {
 		// If it exists, copy the page into the destination
 		TargetFrameId := p.Data[PageStartAddress]
+		// NOTE all pages that are read are referenced by default; one must manually dereference them to enable eviction
+		p.Frames[TargetFrameId].ReferenceCount += 1
 		BytesCopied := copy(Destination, p.Frames[TargetFrameId].data)
 		if BytesCopied != p.PageSize {
 			return hit, fmt.Errorf(
@@ -99,13 +104,18 @@ func (p *PageCache) ReadPage(PageStartAddress int, Destination []byte) (bool, er
 				BytesCopied,
 			)
 		}
-
 	} else {
+
 		// If it doesn't exist, evict a page, and fill the frame with the part necessary
-		// As of right now, this just returns the first page
-		NewFrameId := p.EvictPage()
-		// Reset the new Frame
+		NewFrameId, err := p.EvictPage()
+		if err != nil {
+			return hit, err
+		}
+
+		// Reset the new Frame, Add all the details we need
 		p.Frames[NewFrameId].Reset()
+		p.Frames[NewFrameId].PageOffsetInFile = PageStartAddress
+		p.Frames[NewFrameId].ReferenceCount = 1 // this is the first read, we assume it's being referenced at least once
 		// Copy the data from the file into the new frame
 		bytes_read, err := p.file.ReadAt(p.Frames[NewFrameId].data, int64(PageStartAddress))
 		if err != nil {
@@ -140,20 +150,64 @@ func (p *PageCache) WritePage(PageStartAddress int, Content *[]byte) (bool, erro
 	return false, nil
 }
 
+// Dereference a page
+func (p *PageCache) DereferencePage(PageStartAddress int) error {
+	hit := CheckMapKeyPresent(&p.Data, PageStartAddress)
+	if hit {
+		FrameId := p.Data[PageStartAddress]
+		p.Frames[FrameId].ReferenceCount -= 1 // NOTE this should be an atomic operation, with some sort of safeguard to ensure that only processes that referenced the page can dereference it, this is a BUG Until then
+		return nil
+	} else {
+		return fmt.Errorf("Cannot Dereference a Page that doesn't exist (Offset %d)!", PageStartAddress)
+	}
+}
+
 // A function that writes a page frame from the cache to the disk
 func (p *PageCache) FlushFrameToDisk(FrameID int) (bool, error) {
-
-	return false, nil
+	// Write the page back to the file at the start offset
+	written_count, err := p.file.WriteAt(
+		p.Frames[FrameID].data,
+		int64(p.Frames[FrameID].PageOffsetInFile),
+	)
+	if written_count != p.PageSize {
+		return false, fmt.Errorf(
+			"Could not Write a Full Page -> Expected %d Copied %d",
+			p.PageSize,
+			written_count,
+		)
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// function to evict page and return pageId of new empty frame
-func (p *PageCache) EvictPage() int {
+// function to evict page and return Frame Index to evict
+// For now, this is a simple brute-force LRU, will optimize later with CLOCK
+func (p *PageCache) EvictPage() (int, error) {
 
-	return 0
+	// find the first empty slot that isn't referenced
+	min_ref_count := 10000 // TODO make this a reasonable max value
+	min_ref_page_id := 0
+	for i := 0; i < p.FrameCount; i++ {
+		curr_frame := p.Frames[i]
+		if curr_frame.ReferenceCount < min_ref_count {
+			min_ref_count = curr_frame.ReferenceCount
+			min_ref_page_id = i
+		}
+	}
+
+	// Flush the target page to disk
+	if p.Frames[min_ref_page_id].Dirty {
+		_, err := p.FlushFrameToDisk(min_ref_page_id)
+		if err != nil {
+			return min_ref_page_id, err
+		}
+	}
+	// Reset the Frame and delete the page entry in the hashmap
+	p.Frames[min_ref_page_id].Reset()
+	// Delete the mapping in the address translator
+	delete(p.Data, min_ref_page_id)
+
+	return min_ref_page_id, nil
 }
-
-// TODO
-// Add functions for
-// -> Flushing a Page to Disk
-// -> Evicting a Page from the Cache
-// ->
