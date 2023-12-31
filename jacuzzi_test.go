@@ -164,9 +164,50 @@ func TestWriteBackToCache_PageInCache(t *testing.T) {
 	}
 
 	if bytes.Equal(buffer1, buffer2) != true {
-		// t.Log("Bytes 1: ", buffer1)
-		// t.Log("Bytes 2: ", buffer2)
 		t.Error("Writing back to file was not successful!")
 	}
 
+}
+
+func TestWriteBackToCache_PageNotInCache(t *testing.T) {
+	pageSize := os.Getpagesize()
+	slots := 1
+	file := "test.bin"
+
+	var pc PageCache = PageCache{}
+	err := pc.Init(pageSize, slots, file)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Make a blank buffer
+	buffer1 := make([]byte, pageSize)
+	buffer1[0] = 0x58
+
+	// Write this to the cache
+	success, err := pc.WritePage(pageSize, &buffer1)
+	if err != nil {
+		t.Error(err)
+	}
+	if success != true {
+		t.Error("Could not write page back!", err)
+	}
+
+	// Initialize a new PageCache
+	var pc2 PageCache = PageCache{}
+	err = pc2.Init(pageSize, slots, file)
+	if err != nil {
+		t.Error(err)
+	}
+	buffer2 := make([]byte, pageSize)
+	hit2, err := pc2.ReadPage(pageSize, buffer2)
+	if err != nil {
+		t.Error(err)
+	}
+	if hit2 != false {
+		t.Error("Unexpected Cache Hit on first read of page, hit status: ", hit2)
+	}
+	if bytes.Equal(buffer1, buffer2) != true {
+		t.Error("Writing back to file was not successful!")
+	}
 }
