@@ -147,7 +147,43 @@ func (p *PageCache) ReadPage(PageStartAddress int, Destination []byte) (bool, er
 // return signature (bool, error) ->
 // ----> bool: True if Cache Hit, False if Cache Miss
 func (p *PageCache) WritePage(PageStartAddress int, Content *[]byte) (bool, error) {
-	return false, nil
+	// check if the key exists
+	hit := CheckMapKeyPresent(&p.Data, PageStartAddress)
+	if hit {
+		// if it does
+		// modify the page
+		TargetPageId := p.Data[PageStartAddress]
+		p.Frames[TargetPageId].data = *Content // TODO should this be a os.copy instead of an assignment?
+		// mark as dirty
+		p.Frames[TargetPageId].Dirty = true
+		// return success
+		return true, nil
+	} else {
+		// if it doesn't
+		// evict a frame
+		NewFrameId, err := p.EvictPage()
+		if err != nil {
+			return hit, err
+		}
+
+		// Reset the new Frame, Add all the details we need
+		p.Frames[NewFrameId].Reset()
+		p.Frames[NewFrameId].PageOffsetInFile = PageStartAddress
+		p.Frames[NewFrameId].ReferenceCount = 1 // this is the first read, we assume it's being referenced at least once
+		// replace the frame's content with the written buffer
+		p.Frames[NewFrameId].data = *Content
+		// mark as dirty
+		p.Frames[NewFrameId].Dirty = true
+		// Write the page back to disk
+		// NOTE modify this later - as of now, this is write-through
+		_, err = p.FlushFrameToDisk(NewFrameId)
+		if err != nil {
+			return false, err
+		}
+		p.Frames[NewFrameId].Dirty = false
+		// return a success
+		return true, nil
+	}
 }
 
 // Dereference a page
@@ -160,6 +196,20 @@ func (p *PageCache) DereferencePage(PageStartAddress int) error {
 	} else {
 		return fmt.Errorf("Cannot Dereference a Page that doesn't exist (Offset %d)!", PageStartAddress)
 	}
+}
+
+// Function to flush all dirty pages in the cache to disk
+func (p *PageCache) FlushCacheToDisk() error {
+	for index, frame := range p.Frames {
+		if frame.Dirty {
+			_, err := p.FlushFrameToDisk(index)
+			if err != nil {
+				return err
+			}
+			p.Frames[index].Dirty = false
+		}
+	}
+	return nil
 }
 
 // A function that writes a page frame from the cache to the disk
