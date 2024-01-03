@@ -4,18 +4,15 @@ package jacuzzi
 
 // Function to get the length of the left child of a binary heap node
 func LeftChildIndex(current_index int) int {
-	return 1<<current_index + 1
-	// 2 * current_index + 1
+	return 2*current_index + 1
 }
 
 func RightChildIndex(current_index int) int {
-	return 1<<current_index + 2
-	// 2 * current_index + 2
+	return 2*current_index + 2
 }
 
 func ParentIndex(current_index int) int {
 	return current_index / 2
-	// current_index / 2
 }
 
 func Swap(data []int, idx1, idx2 int) {
@@ -75,7 +72,26 @@ func (h *MinHeap) HeapifyUp(position int) {
 
 // heapify up from the element at position int
 func (h *MinHeap) HeapifyDown(position int) {
+	current_position := position
+	smallest := current_position
 
+	left_index := LeftChildIndex(current_position)
+	right_index := RightChildIndex(current_position)
+
+	// check left child
+	if left_index < h.heapsize-1 && h.data[left_index] < h.data[smallest] {
+		smallest = left_index
+	}
+	// check right child
+	if right_index < h.heapsize-1 && h.data[right_index] < h.data[smallest] {
+		smallest = right_index
+	}
+
+	if smallest != position { // if a swap happened
+		Swap(h.data, position, smallest)
+		h.HeapifyDown(smallest)
+	}
+	// if the root is greater than the left or right child, swap them
 }
 
 func (h *MinHeap) AddItem(item int) {
@@ -84,6 +100,15 @@ func (h *MinHeap) AddItem(item int) {
 	h.HeapifyUp(h.heapsize - 1)
 }
 
-func (h *MinHeap) PopItem()    {}
+func (h *MinHeap) PopItem() int {
+	output := h.PeekItem()
+	// swap the top and bottom variables
+	Swap(h.data, 0, h.heapsize-1)
+	// heapify down from root
+	h.HeapifyDown(0)
+	h.heapsize -= 1
+	return output
+}
+
 func (h *MinHeap) UpdateItem() {}
 func (h *MinHeap) DeleteItem() {}
