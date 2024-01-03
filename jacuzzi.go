@@ -198,20 +198,6 @@ func (p *PageCache) DereferencePage(PageStartAddress int) error {
 	}
 }
 
-// Function to flush all dirty pages in the cache to disk
-func (p *PageCache) FlushCacheToDisk() error {
-	for index, frame := range p.Frames {
-		if frame.Dirty {
-			_, err := p.FlushFrameToDisk(index)
-			if err != nil {
-				return err
-			}
-			p.Frames[index].Dirty = false
-		}
-	}
-	return nil
-}
-
 // A function that writes a page frame from the cache to the disk
 func (p *PageCache) FlushFrameToDisk(FrameID int) (bool, error) {
 	// Write the page back to the file at the start offset
@@ -230,6 +216,20 @@ func (p *PageCache) FlushFrameToDisk(FrameID int) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// Function to flush all dirty pages in the cache to disk
+func (p *PageCache) FlushCacheToDisk() error {
+	for index, frame := range p.Frames {
+		if frame.Dirty {
+			_, err := p.FlushFrameToDisk(index)
+			if err != nil {
+				return err
+			}
+			p.Frames[index].Dirty = false
+		}
+	}
+	return nil
 }
 
 // function to evict page and return Frame Index to evict
